@@ -1909,8 +1909,11 @@ function setupDrawingInteraction() {
       state.pending = { type: state.tool, points: [pt] };
     } else {
       state.pending.points.push(pt);
-      state.drawings.push(state.pending);
-      state.pending = null;
+      const need = state.tool === 'fibext' ? 3 : 2;
+      if (state.pending.points.length >= need) {
+        state.drawings.push(state.pending);
+        state.pending = null;
+      }
       drawOverlay();
     }
   });

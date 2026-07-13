@@ -1667,33 +1667,97 @@ function renderDrawingLW(ctx, d, w, h, priceToY, timeToX, pending = false) {
     const a = getPx(d.points[0]);
     const b = d.points[1] ? getPx(d.points[1]) : d.hover;
     if (!b) return;
-    const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0];
-    const colors = ['#ef4444', '#f59e0b', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#ec4899'];
-    const hiV = Math.max(d.points[0].v, d.points[1] ? d.points[1].v : d.hoverV);
-    const loV = Math.min(d.points[0].v, d.points[1] ? d.points[1].v : d.hoverV);
-    levels.forEach((l, k) => {
-      const priceAtLevel = hiV - (hiV - loV) * l;
+    // Bidirectional: startV = pierwszy klik (0%), endV = drugi klik (100%)
+    const startV = d.points[0].v;
+    const endV = d.points[1] ? d.points[1].v : d.hoverV;
+    const range = endV - startV;   // signed — dodatni = uptrend, ujemny = downtrend
+    const fibs = [
+      { v: 0,     c: '#ef4444', lbl: '0' },
+      { v: 0.236, c: '#f59e0b', lbl: '23.6' },
+      { v: 0.382, c: '#eab308', lbl: '38.2' },
+      { v: 0.5,   c: '#22c55e', lbl: '50' },
+      { v: 0.618, c: '#3b82f6', lbl: '61.8' },
+      { v: 0.786, c: '#a855f7', lbl: '78.6' },
+      { v: 1.0,   c: '#ec4899', lbl: '100' },
+      { v: 1.272, c: '#22d3ee', lbl: '127.2', ext: true },
+      { v: 1.618, c: '#f472b6', lbl: '161.8', ext: true },
+      { v: 2.0,   c: '#fb923c', lbl: '200',   ext: true },
+      { v: 2.618, c: '#a78bfa', lbl: '261.8', ext: true },
+    ];
+    const rightX = Math.max(a.x, b.x) + 40;
+    fibs.forEach(f => {
+      const priceAtLevel = startV + range * f.v;
       const y = priceToY(priceAtLevel);
       if (y == null) return;
-      ctx.strokeStyle = colors[k];
-      ctx.setLineDash([]);
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = f.c;
+      ctx.setLineDash(f.ext ? [4, 3] : []);
+      ctx.lineWidth = f.v === 0 || f.v === 1 ? 1.5 : 1;
       ctx.beginPath();
       ctx.moveTo(Math.min(a.x, b.x), y);
-      ctx.lineTo(Math.max(a.x, b.x), y);
+      ctx.lineTo(rightX, y);
       ctx.stroke();
-      ctx.fillStyle = colors[k];
+      ctx.setLineDash([]);
+      ctx.fillStyle = f.c;
       ctx.font = 'bold 10px monospace';
-      ctx.fillText((l * 100).toFixed(1) + '% · ' + formatPrice(priceAtLevel), Math.max(a.x, b.x) + 4, y + 3);
+      ctx.fillText(f.lbl + '% · ' + formatPrice(priceAtLevel), rightX + 2, y + 3);
     });
-    // Rectangle around fib area
+    // Ramka zakresu 0-100%
     ctx.strokeStyle = 'rgba(251,191,36,0.3)';
     ctx.setLineDash([3, 3]);
     ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
     ctx.setLineDash([]);
+  } else if (d.type === 'fibext' && d.points.length >= 1) {
+    // Trend-Based Fib Extension — 3 punkty: A (start impulsu) → B (koniec impulsu) → C (pivot pullbacku)
+    const a = getPx(d.points[0]);
+    const b = d.points[1] ? getPx(d.points[1]) : (d.points.length === 1 ? d.hover : null);
+    const c = d.points[2] ? getPx(d.points[2]) : (d.points.length === 2 ? d.hover : null);
+    if (!b) return;
+    const aV = d.points[0].v;
+    const bV = d.points[1] ? d.points[1].v : d.hoverV;
+    const cV = d.points[2] ? d.points[2].v : (d.points.length === 2 ? d.hoverV : null);
+    const impulseRange = bV - aV;
+    // Rysuj linie A→B i B→C
+    ctx.strokeStyle = 'rgba(156,163,175,0.7)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    // Endpoint markers
+    [a, b].forEach(p => { ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fillStyle = '#fbbf24'; ctx.fill(); });
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = 'bold 9px monospace';
+    ctx.fillText('A', a.x - 12, a.y + 3);
+    ctx.fillText('B', b.x + 6, b.y + 3);
+    if (!c || cV == null) return;
+    ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(c.x, c.y); ctx.stroke();
+    ctx.beginPath(); ctx.arc(c.x, c.y, 3, 0, Math.PI * 2); ctx.fill();
+    ctx.fillText('C', c.x + 6, c.y + 3);
+    // Poziomy ekstensji projektowane od C w kierunku ruchu A→B
+    const extLevels = [
+      { v: 0,     c: '#22c55e', lbl: 'C (0)' },
+      { v: 0.382, c: '#eab308', lbl: '38.2' },
+      { v: 0.618, c: '#3b82f6', lbl: '61.8' },
+      { v: 1.0,   c: '#a855f7', lbl: '100' },
+      { v: 1.272, c: '#22d3ee', lbl: '127.2' },
+      { v: 1.618, c: '#ec4899', lbl: '161.8' },
+      { v: 2.0,   c: '#fb923c', lbl: '200' },
+      { v: 2.618, c: '#f472b6', lbl: '261.8' },
+    ];
+    const startX = c.x;
+    const endX = w;
+    extLevels.forEach(l => {
+      const price = cV + impulseRange * l.v;
+      const y = priceToY(price);
+      if (y == null) return;
+      ctx.strokeStyle = l.c;
+      ctx.setLineDash(l.v === 0 ? [] : (l.v > 1 ? [4, 3] : [6, 3]));
+      ctx.lineWidth = (l.v === 1 || l.v === 1.618) ? 1.5 : 1;
+      ctx.beginPath(); ctx.moveTo(startX, y); ctx.lineTo(endX, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = l.c;
+      ctx.font = 'bold 10px monospace';
+      ctx.fillText(l.lbl + '% · ' + formatPrice(price), endX - 100, y + 3);
+    });
   }
-}
-
 function setupZoomPan_DISABLED() {
   const layer = document.getElementById('drawingLayer');
   const wrap = document.getElementById('chartWrap');

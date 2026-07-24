@@ -186,7 +186,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, Bl
     </div>
   </div>
 </div>
-<div class="footer-note">Silnik: TradingView Lightweight Charts · Dane: Bybit V5 (crypto), Yahoo Finance (gold/stocks), Stooq fallback · Odśwież co 60s · Nie stanowi porady inwestycyjnej.</div>
+<div class="footer-note">Silnik: TradingView Lightweight Charts · Dane: Bybit V5 (crypto + gold tokens XAUT/PAXG), Yahoo Finance (stocks, silver), Stooq fallback · Odśwież co 60s · Nie stanowi porady inwestycyjnej.</div>
 
 <script>
 const ASSETS = {
@@ -223,18 +223,20 @@ const ASSETS = {
     {id:'rndr',sym:'RNDR',name:'Render',bybit:'RNDRUSDT'},
   ],
   gold: [
-    {id:'xauusd',sym:'XAU/USD',name:'Gold spot',yahoo:'GC=F',stooq:'xauusd'},
-    {id:'xagusd',sym:'XAG/USD',name:'Silver spot',yahoo:'SI=F',stooq:'xagusd'},
+    {id:'xaut',sym:'XAUT',name:'Tether Gold (Bybit)',bybit:'XAUTUSDT'},
+    {id:'paxg',sym:'PAXG',name:'PAX Gold (Bybit)',bybit:'PAXGUSDT'},
+    {id:'xagusd',sym:'XAG/USD',name:'Silver spot (Yahoo)',yahoo:'SI=F'},
+    {id:'xauusd_yahoo',sym:'XAU/USD',name:'Gold spot fallback (Yahoo)',yahoo:'GC=F'},
   ],
   stocks: [
-    {id:'aapl',sym:'AAPL',name:'Apple',yahoo:'AAPL',stooq:'aapl.us'},
-    {id:'msft',sym:'MSFT',name:'Microsoft',yahoo:'MSFT',stooq:'msft.us'},
-    {id:'nvda',sym:'NVDA',name:'NVIDIA',yahoo:'NVDA',stooq:'nvda.us'},
-    {id:'tsla',sym:'TSLA',name:'Tesla',yahoo:'TSLA',stooq:'tsla.us'},
-    {id:'googl',sym:'GOOGL',name:'Alphabet',yahoo:'GOOGL',stooq:'googl.us'},
-    {id:'amzn',sym:'AMZN',name:'Amazon',yahoo:'AMZN',stooq:'amzn.us'},
-    {id:'meta',sym:'META',name:'Meta',yahoo:'META',stooq:'meta.us'},
-    {id:'spy',sym:'SPY',name:'S&P 500 ETF',yahoo:'SPY',stooq:'spy.us'},
+    {id:'aapl',sym:'AAPL',name:'Apple',yahoo:'AAPL'},
+    {id:'msft',sym:'MSFT',name:'Microsoft',yahoo:'MSFT'},
+    {id:'nvda',sym:'NVDA',name:'NVIDIA',yahoo:'NVDA'},
+    {id:'tsla',sym:'TSLA',name:'Tesla',yahoo:'TSLA'},
+    {id:'googl',sym:'GOOGL',name:'Alphabet',yahoo:'GOOGL'},
+    {id:'amzn',sym:'AMZN',name:'Amazon',yahoo:'AMZN'},
+    {id:'meta',sym:'META',name:'Meta',yahoo:'META'},
+    {id:'spy',sym:'SPY',name:'S&P 500 ETF',yahoo:'SPY'},
   ]
 };
 
@@ -272,7 +274,6 @@ setInterval(() => {
   document.getElementById('clock').textContent = d.toLocaleTimeString('pl-PL') + ' · ' + d.toLocaleDateString('pl-PL');
 }, 1000);
 
-// ===== INDICATORS =====
 function sma(a, p) { const r=[]; for(let i=0;i<a.length;i++){if(i<p-1){r.push(null);continue;} let s=0; for(let j=i-p+1;j<=i;j++)s+=a[j]; r.push(s/p);} return r; }
 function ema(a, p) { const k=2/(p+1); const r=[]; let x=a[0]; r.push(x); for(let i=1;i<a.length;i++){x=a[i]*k+x*(1-k); r.push(x);} return r; }
 function rsi(a, p=14) { const r=new Array(a.length).fill(null); if(a.length<p+1)return r; let g=0,l=0; for(let i=1;i<=p;i++){const d=a[i]-a[i-1]; if(d>0)g+=d; else l-=d;} let ag=g/p,al=l/p; r[p]=100-100/(1+ag/(al||1e-9)); for(let i=p+1;i<a.length;i++){const d=a[i]-a[i-1]; const gg=d>0?d:0; const ll=d<0?-d:0; ag=(ag*(p-1)+gg)/p; al=(al*(p-1)+ll)/p; r[i]=100-100/(1+ag/(al||1e-9));} return r; }
@@ -381,13 +382,12 @@ function detectSignalZones(prices, tf) {
     const s21=last>=26?(e21[last]-e21[last-5])/e21[last-5]:0;
     if(rL<40&&rS>2)clean.push({type:'blue',startIdx:Math.max(0,last-3),endIdx:last,active:true,strength:1});
     else if(rL>60&&rS<-2)clean.push({type:'red',startIdx:Math.max(0,last-3),endIdx:last,active:true,strength:1});
-    else if(e21[last]>e50[last]&&s21>0&&rL<50&&rS>0)clean.push({type:'blue',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1});
-    else if(e21[last]<e50[last]&&s21<0&&rL>50&&rS<0)clean.push({type:'red',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1});
+    else if(e21[last]>e50[last]&&s21>0&&rL<50&&rS>0)clean.push({type:'blue',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1,kind:'pullback'});
+    else if(e21[last]<e50[last]&&s21<0&&rL>50&&rS<0)clean.push({type:'red',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1,kind:'pullback'});
   }
   return clean;
 }
 
-// ===== DATA FETCH =====
 async function fetchBybit(symbol, interval, limit=1000) {
   const url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&limit=${limit}`;
   const r = await fetch(url);
@@ -425,10 +425,13 @@ async function loadData() {
   showLoading();
   try{
     let data;
-    if(state.category==='crypto'){
+    // Bybit gdy asset ma pole bybit — działa dla crypto ORAZ dla gold tokenów
+    if(asset.bybit){
       data = await fetchBybit(asset.bybit, tf.bybit, tf.limit);
-    } else {
+    } else if(asset.yahoo){
       data = await fetchYahoo(asset.yahoo, tf.yahoo.r, tf.yahoo.i);
+    } else {
+      throw new Error('No data source configured for asset');
     }
     if(!data||data.length<5)throw new Error('No data');
     state.prices = data;
@@ -449,7 +452,6 @@ function showLoading(){
 
 function formatPrice(v){ if(v>=1000)return '$'+v.toLocaleString('en-US',{maximumFractionDigits:2}); if(v>=1)return '$'+v.toFixed(2); return '$'+v.toPrecision(4); }
 
-// ===== CHART =====
 let _chart = null;
 let _series = {candles:null, emas:{}, bbUpper:null, bbLower:null};
 let _liquidityLines = [];
@@ -543,7 +545,6 @@ function drawOverlay(){
   const priceToY = v=>_series.candles.priceToCoordinate(v);
   const timeToX = t=>ts.timeToCoordinate(t);
 
-  // Signal Zones
   if(state.showZones && state.prices.length>40){
     const zones = detectSignalZones(state.prices, state.timeframe);
     zones.forEach(z=>{
@@ -566,7 +567,6 @@ function drawOverlay(){
     });
   }
 
-  // Order Blocks
   if(state.showOB && state.prices.length>5 && state.prices[0].o!=null){
     const obs = detectOrderBlocks(state.prices, 3, state.obSensitivity, 6);
     const usedY = [];
@@ -596,7 +596,6 @@ function drawOverlay(){
     });
   }
 
-  // User drawings
   state.drawings.forEach(d=>renderDrawing(ctx, d, rect.width, rect.height, priceToY, timeToX));
   if(state.pending)renderDrawing(ctx, state.pending, rect.width, rect.height, priceToY, timeToX, true);
 
@@ -749,13 +748,12 @@ function render(){
   chEl.textContent = (change>=0?'▲ +':'▼ ') + change.toFixed(2) + '%';
   chEl.className = 'price-change ' + (change>=0?'up':'down');
   drawChart(data);
-  updateMetrics(values);
+  updateMetrics(values, data);
   const tag = document.getElementById('tfProfileTag');
-  const p = TF_PROFILES[state.timeframe]||{smooth:3,hi:60,lo:40};
-  tag.textContent = 'Auto-TF: ' + state.timeframe.toUpperCase();
+  tag.textContent = 'Auto-TF: ' + state.timeframe.toUpperCase() + ' · ' + state.sensitivity;
 }
 
-function updateMetrics(values){
+function updateMetrics(values, priceObjs){
   const i = values.length-1;
   const r = rsi(values)[i];
   const m = macd(values);
@@ -776,21 +774,58 @@ function updateMetrics(values){
   set('momMetric', (mom>=0?'+':'')+mom.toFixed(2)+'%', mom>0?'up':'down');
   set('ma50Metric', ma50!=null?formatPrice(ma50):'—', ma50!=null&&values[i]>ma50?'up':'down');
   set('ma200Metric', ma200!=null?formatPrice(ma200):'—', ma200!=null&&values[i]>ma200?'up':'down');
-  // Composite score
-  let score = 50;
-  if(r!=null){if(r<30)score+=20; else if(r<45)score+=10; else if(r>70)score-=20; else if(r>55)score-=10;}
-  if(macdH!=null){if(macdH>0)score+=10; else score-=10;}
-  if(bbP!=null){if(bbP<.2)score+=10; else if(bbP>.8)score-=10;}
-  score = Math.max(0,Math.min(100,score));
+
+  // ===== SYGNAŁ z Signal Zones — bezpośrednio z tego samego algorytmu co strefy na wykresie =====
   const sigEl = document.getElementById('mainSignal');
-  if(score>60){sigEl.className='signal-box signal-buy'; sigEl.textContent='▲ Blue Zone · BUY';}
-  else if(score<40){sigEl.className='signal-box signal-sell'; sigEl.textContent='▼ Red Zone · SELL';}
-  else {sigEl.className='signal-box signal-neutral'; sigEl.textContent='● Neutral · HOLD';}
+  let signalText = '● Neutral · HOLD';
+  let signalClass = 'signal-neutral';
+  let score = 50;
+
+  if(priceObjs && priceObjs.length > 40){
+    const zones = detectSignalZones(priceObjs, state.timeframe);
+    // 1. Aktywna strefa (na ostatnim barze) — najsilniejszy sygnał
+    const activeZone = zones.find(z => z.active);
+    // 2. Ostatnia strefa którą cena wciąż zawiera (świeca w zonie)
+    const last = priceObjs.length - 1;
+    const inZone = zones.find(z => last >= z.startIdx && last <= z.endIdx && !z.active);
+    const chosenZone = activeZone || inZone;
+
+    if(chosenZone){
+      if(chosenZone.type === 'blue'){
+        signalText = activeZone ? '▲ ACTIVE · BUY' : '▲ Blue Zone · BUY';
+        signalClass = 'signal-buy';
+        score = 75 + Math.min(20, chosenZone.strength * 3);
+      } else {
+        signalText = activeZone ? '▼ ACTIVE · SELL' : '▼ Red Zone · SELL';
+        signalClass = 'signal-sell';
+        score = 25 - Math.min(20, chosenZone.strength * 3);
+      }
+    } else {
+      // Brak strefy — użyj RSI + MACD dla wskazania tendencji
+      if(r != null){
+        if(r < 30) { score += 15; }
+        else if(r > 70) { score -= 15; }
+        else if(r < 45) { score += 5; }
+        else if(r > 55) { score -= 5; }
+      }
+      if(macdH != null){ score += macdH > 0 ? 5 : -5; }
+      if(bbP != null){
+        if(bbP < .2) score += 5;
+        else if(bbP > .8) score -= 5;
+      }
+      score = Math.max(0, Math.min(100, score));
+      if(score >= 62){ signalText = '↗ Bias UP · HOLD/BUY'; signalClass = 'signal-buy'; }
+      else if(score <= 38){ signalText = '↘ Bias DOWN · HOLD/SELL'; signalClass = 'signal-sell'; }
+      else { signalText = '● Neutral · HOLD'; signalClass = 'signal-neutral'; }
+    }
+  }
+  sigEl.className = 'signal-box ' + signalClass;
+  sigEl.textContent = signalText;
+  score = Math.max(0, Math.min(100, score));
   document.getElementById('compositeScore').textContent = score.toFixed(0) + ' / 100';
   document.getElementById('compositeBar').style.width = score + '%';
 }
 
-// ===== DRAWING INTERACTION =====
 function setupDrawingInteraction(){
   const canvas = document.getElementById('drawingLayer');
   canvas.addEventListener('mousemove', e=>{
@@ -835,7 +870,6 @@ function setupDrawingInteraction(){
   });
 }
 
-// ===== UI =====
 function renderAssetList(){
   const list = document.getElementById('assetList');
   list.innerHTML = '';
@@ -911,7 +945,7 @@ document.querySelectorAll('#sensBtns button').forEach(b=>{
     document.querySelectorAll('#sensBtns button').forEach(x=>x.classList.remove('active'));
     b.classList.add('active');
     state.sensitivity = b.dataset.sens;
-    if(state.prices.length)drawOverlay();
+    if(state.prices.length){drawOverlay(); render();}
   };
 });
 document.getElementById('zoomFitBtn').onclick = ()=>{if(_chart)_chart.timeScale().fitContent();};
@@ -921,7 +955,6 @@ document.getElementById('zoomResetBtn').onclick = ()=>{
     _chart.timeScale().setVisibleLogicalRange({from:Math.max(0,n-100), to:n});
   }
 };
-// Resize handle
 (function(){
   const handle = document.getElementById('resizeHandle');
   const wrap = document.getElementById('chartWrap');
@@ -931,7 +964,6 @@ document.getElementById('zoomResetBtn').onclick = ()=>{
   window.addEventListener('mouseup', ()=>{if(rs){rs=null; document.body.style.cursor=''; document.body.style.userSelect='';}});
 })();
 
-// ===== INIT =====
 state.currentAsset = ASSETS.crypto[0];
 renderAssetList();
 setupDrawingInteraction();

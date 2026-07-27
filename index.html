@@ -48,7 +48,6 @@ body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkM
 .signal-buy { background:linear-gradient(135deg,rgba(59,130,246,.2),rgba(59,130,246,.05)); border:1px solid var(--blue); color:var(--blue); }
 .signal-sell { background:linear-gradient(135deg,rgba(239,68,68,.2),rgba(239,68,68,.05)); border:1px solid var(--red); color:var(--red); }
 .signal-neutral { background:rgba(156,163,175,.1); border:1px solid var(--border); color:var(--muted); }
-.signal-desc { font-size:10px; margin-top:6px; opacity:.85; font-weight:normal; text-transform:none; letter-spacing:0; }
 .metric-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
 .metric { background:var(--panel-2); padding:10px 12px; border-radius:6px; border-left:3px solid var(--border); }
 .metric-label { font-size:10px; color:var(--muted); text-transform:uppercase; }
@@ -173,7 +172,7 @@ body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkM
     </div>
   </div>
 </div>
-<div class="footer-note">Silnik: TradingView Lightweight Charts · Dane: Bybit V5 (crypto + gold XAUT/PAXG), Yahoo Finance (stocks, silver) · Odśwież 60s · Nie stanowi porady inwestycyjnej.</div>
+<div class="footer-note">Silnik: TradingView Lightweight Charts · Dane: Bybit V5 · Odśwież 60s · Nie stanowi porady inwestycyjnej.</div>
 
 <script>
 const ASSETS = {
@@ -257,11 +256,51 @@ function detectOrderBlocks(bars,lookforward=3,minImpulse=1.5,maxN=6){
   return dedup.slice(0,maxN).reverse();
 }
 
-// ===== TREND CONTEXT — używane wszędzie żeby signal nie walczył z trendem =====
+// ===== OB PROXIMITY CHECK — najwyższy priorytet sygnału =====
+function checkOBProximity(prices){
+  if(!prices||prices.length<20||prices[0].o==null) return null;
+  const obs = detectOrderBlocks(prices, 3, 1.5, 6);
+  const last = prices.length-1;
+  const priceNow = prices[last].v;
+  const priceHigh = prices[last].h;
+  const priceLow = prices[last].l;
+  const values = prices.map(p=>p.v);
+  const rArr = rsi(values, 14);
+  const r = rArr[last];
+  if(r == null) return null;
+  // Sortuj OB po dystansie od aktualnej ceny
+  const withDist = obs.filter(ob=>!ob.mitigated).map(ob=>({...ob, midPrice:(ob.top+ob.bottom)/2, dist:Math.abs((ob.top+ob.bottom)/2 - priceNow)/priceNow*100}));
+  withDist.sort((a,b)=>a.dist-b.dist);
+  for(const ob of withDist.slice(0,3)){
+    if(ob.type === 'bear'){
+      // Cena wchodzi w BEAR OB od dołu
+      const inside = priceHigh >= ob.bottom * 0.998 && priceNow <= ob.top * 1.002;
+      const approaching = priceNow < ob.bottom && ob.dist < 0.6;
+      if(inside && r>48){
+        return {type:'sell', reason:'BEAR OB TEST', strength: Math.max(2, r-45)};
+      }
+      if(approaching && r>52){
+        return {type:'warn_sell', reason:'BEAR OB approach', strength: Math.max(1, r-50)};
+      }
+    }
+    if(ob.type === 'bull'){
+      const inside = priceLow <= ob.top * 1.002 && priceNow >= ob.bottom * 0.998;
+      const approaching = priceNow > ob.top && ob.dist < 0.6;
+      if(inside && r<52){
+        return {type:'buy', reason:'BULL OB TEST', strength: Math.max(2, 55-r)};
+      }
+      if(approaching && r<48){
+        return {type:'warn_buy', reason:'BULL OB approach', strength: Math.max(1, 50-r)};
+      }
+    }
+  }
+  return null;
+}
+
 function analyzeTrend(prices){
   const values = prices.map(p=>p.v);
   const last = values.length - 1;
-  if(last < 60) return {kind:'unknown', strong:false, up:false, down:false, e21:null, e50:null, slope21:0, slope50:0};
+  if(last < 60) return {kind:'unknown', strong:false, up:false, down:false, e21:null, e50:null, slope21:0, slope50:0, priceGtE21:false, price:values[last]};
   const e21 = ema(values, 21), e50 = ema(values, 50), e200 = ema(values, Math.min(200, Math.floor(values.length*.8)));
   const price = values[last];
   const s21 = (e21[last] - e21[last-8]) / e21[last-8] * 100;
@@ -281,7 +320,6 @@ function analyzeTrend(prices){
   return {kind, strong:strongUp||strongDown, up, down, e21:e21[last], e50:e50[last], e200:e200[last], slope21:s21, slope50:s50, priceGtE21, price};
 }
 
-// ===== SIGNAL ZONES — z trend-awareness =====
 function detectSignalZones(prices, tf){
   if(!prices||prices.length<40)return [];
   const values = prices.map(p=>p.v);
@@ -295,8 +333,6 @@ function detectSignalZones(prices, tf){
   const lf = {strict:10, balanced:8, aggressive:6}[sens];
   const zoneBars = 4;
   const zones = [];
-
-  // Historyczne — forward-looking validation
   for(let i=20; i<prices.length-lf; i++){
     const start = values[i]; let mu=0, md=0, firstHit=null;
     for(let k=1;k<=lf;k++){
@@ -328,17 +364,13 @@ function detectSignalZones(prices, tf){
     }
     return true;
   });
-
-  // ACTIVE ZONE — TREND-FIRST, restrykcyjne
   const trend = analyzeTrend(prices);
   const last = prices.length-1;
   if(last>=25 && rArr[last]!=null){
     const rL = rArr[last], rP = rArr[Math.max(0,last-5)], rS = (rP!=null)?rL-rP:0;
     const priceCrossedDown = last>=1 && values[last-1] > e21[last-1] && values[last] < e21[last];
     const priceCrossedUp = last>=1 && values[last-1] < e21[last-1] && values[last] > e21[last];
-
     if(trend.kind === 'strong_up'){
-      // W silnym uptrendzie: BUY na pullbacku, SELL tylko przy potwierdzonym breaku
       if(rL<45 && rS>0){ clean.push({type:'blue',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1.5,label:'PULLBACK BUY'}); }
       else if(priceCrossedDown && rS<-8){ clean.push({type:'red',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1,label:'BREAK DOWN'}); }
     }
@@ -347,18 +379,19 @@ function detectSignalZones(prices, tf){
       else if(priceCrossedUp && rS>8){ clean.push({type:'blue',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1,label:'BREAK UP'}); }
     }
     else if(trend.kind === 'weak_up' || trend.kind === 'weak_down'){
-      if(rL<30 && rS>2){ clean.push({type:'blue',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1.2}); }
-      else if(rL>70 && rS<-2){ clean.push({type:'red',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1.2}); }
+      if(rL<35 && rS>1){ clean.push({type:'blue',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1.2}); }
+      else if(rL>65 && rS<-1){ clean.push({type:'red',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1.2}); }
     }
-    else { // range
-      if(rL<35 && rS>0){ clean.push({type:'blue',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1}); }
-      else if(rL>65 && rS<0){ clean.push({type:'red',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1}); }
+    else {
+      // RANGE — bardziej wrażliwy
+      if(rL<42 && rS>1){ clean.push({type:'blue',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1}); }
+      else if(rL>58 && rS<-1){ clean.push({type:'red',startIdx:Math.max(0,last-2),endIdx:last,active:true,strength:1}); }
     }
   }
   return clean;
 }
 
-// ===== CURRENT SIGNAL — trend-first, priorytet zgodny z trendem =====
+// ===== CURRENT SIGNAL — OB priority + trend-first + sensitive range =====
 function getCurrentSignal(prices, tf){
   if(!prices||prices.length<30) return {text:'● Ładowanie…', class:'signal-neutral', score:50, ctx:'—'};
   const values = prices.map(p=>p.v);
@@ -370,65 +403,98 @@ function getCurrentSignal(prices, tf){
   const rP = rArr[Math.max(0,last-5)];
   const rS = (r!=null && rP!=null) ? r-rP : 0;
   const macdH = macdRes.hist[last];
-  const macdHP = macdRes.hist[last-1];
-  const priceCrossedDown = last>=1 && values[last-1] > trend.e21 && values[last] < trend.e21;
-  const priceCrossedUp = last>=1 && values[last-1] < trend.e21 && values[last] > trend.e21;
+  const macdHP = macdRes.hist[last-1] ?? 0;
+  const macdRising = macdH > macdHP;
+  const priceCrossedDown = last>=1 && trend.e21!=null && values[last-1] > trend.e21 && values[last] < trend.e21;
+  const priceCrossedUp = last>=1 && trend.e21!=null && values[last-1] < trend.e21 && values[last] > trend.e21;
 
   const ctxLabels = {strong_up:'💪 Silny UPTREND', strong_down:'💪 Silny DOWNTREND', weak_up:'↗ Słaby uptrend', weak_down:'↘ Słaby downtrend', range:'↔ Konsolidacja/range', unknown:'Za mało danych'};
-  const ctx = ctxLabels[trend.kind] + ` · EMA21 slope: ${trend.slope21.toFixed(2)}% · RSI: ${r!=null?r.toFixed(0):'—'}`;
+  const ctxBase = ctxLabels[trend.kind] + ` · slope: ${trend.slope21.toFixed(2)}% · RSI: ${r!=null?r.toFixed(0):'—'}`;
 
-  // === STRONG UP ===
-  if(trend.kind === 'strong_up'){
-    // SELL wymaga TRZECH potwierdzeń: break EMA21 + RSI mocno spada + MACD hist ujemny
-    if(priceCrossedDown && rS<-8 && macdH<0){
-      return {text:'▼ CONFIRMED REVERSAL · SELL', class:'signal-sell', score:22, ctx};
+  // ==== 1. OB PROXIMITY — najwyższy priorytet ====
+  const ob = checkOBProximity(prices);
+  if(ob){
+    if(ob.type === 'sell'){
+      return {text:'▼ '+ob.reason+' · SELL', class:'signal-sell', score:20, ctx: ctxBase + ' | OB'};
     }
-    // BUY na pullbacku: RSI<45, rośnie, cena blisko/pod EMA21
-    if(r!=null && r<45 && rS>2){
-      return {text:'▲ PULLBACK · BUY', class:'signal-buy', score:78, ctx};
+    if(ob.type === 'buy'){
+      return {text:'▲ '+ob.reason+' · BUY', class:'signal-buy', score:80, ctx: ctxBase + ' | OB'};
     }
-    // Kontynuacja trendu: świeżo wybite szczyty
-    if(r!=null && r>55 && rS>0 && macdH>0){
-      return {text:'▲ TREND UP · BUY/HOLD', class:'signal-buy', score:70, ctx};
+    if(ob.type === 'warn_sell'){
+      return {text:'⚠ '+ob.reason+' · SELL WATCH', class:'signal-sell', score:35, ctx: ctxBase + ' | OB near'};
     }
-    // Domyślnie w silnym uptrendzie: HOLD long
-    return {text:'▲ TREND UP · HOLD', class:'signal-neutral', score:60, ctx};
+    if(ob.type === 'warn_buy'){
+      return {text:'⚠ '+ob.reason+' · BUY WATCH', class:'signal-buy', score:65, ctx: ctxBase + ' | OB near'};
+    }
   }
 
-  // === STRONG DOWN ===
+  // ==== 2. STRONG UPTREND ====
+  if(trend.kind === 'strong_up'){
+    if(priceCrossedDown && rS<-8 && macdH<0){
+      return {text:'▼ CONFIRMED REVERSAL · SELL', class:'signal-sell', score:22, ctx:ctxBase};
+    }
+    if(r!=null && r<45 && rS>2){
+      return {text:'▲ PULLBACK · BUY', class:'signal-buy', score:78, ctx:ctxBase};
+    }
+    if(r!=null && r>55 && rS>0 && macdH>0){
+      return {text:'▲ TREND UP · BUY/HOLD', class:'signal-buy', score:70, ctx:ctxBase};
+    }
+    return {text:'▲ TREND UP · HOLD', class:'signal-neutral', score:60, ctx:ctxBase};
+  }
+
+  // ==== 3. STRONG DOWNTREND ====
   if(trend.kind === 'strong_down'){
     if(priceCrossedUp && rS>8 && macdH>0){
-      return {text:'▲ CONFIRMED REVERSAL · BUY', class:'signal-buy', score:78, ctx};
+      return {text:'▲ CONFIRMED REVERSAL · BUY', class:'signal-buy', score:78, ctx:ctxBase};
     }
     if(r!=null && r>55 && rS<-2){
-      return {text:'▼ RALLY REJECTION · SELL', class:'signal-sell', score:22, ctx};
+      return {text:'▼ RALLY REJECTION · SELL', class:'signal-sell', score:22, ctx:ctxBase};
     }
     if(r!=null && r<45 && rS<0 && macdH<0){
-      return {text:'▼ TREND DOWN · SELL/HOLD', class:'signal-sell', score:30, ctx};
+      return {text:'▼ TREND DOWN · SELL/HOLD', class:'signal-sell', score:30, ctx:ctxBase};
     }
-    return {text:'▼ TREND DOWN · HOLD', class:'signal-neutral', score:40, ctx};
+    return {text:'▼ TREND DOWN · HOLD', class:'signal-neutral', score:40, ctx:ctxBase};
   }
 
-  // === WEAK UP ===
+  // ==== 4. WEAK UP — bardziej wrażliwy ====
   if(trend.kind === 'weak_up'){
-    if(r!=null && r<35 && rS>2) return {text:'▲ OVERSOLD BOUNCE · BUY', class:'signal-buy', score:72, ctx};
-    if(r!=null && r>72 && rS<-2 && macdH<macdHP) return {text:'▼ OVERBOUGHT · SELL', class:'signal-sell', score:28, ctx};
-    if(macdH>0 && macdH>macdHP) return {text:'↗ Bias UP · HOLD/BUY', class:'signal-buy', score:60, ctx};
-    return {text:'↗ Bias UP · HOLD', class:'signal-neutral', score:55, ctx};
+    if(r!=null && r<35 && rS>2) return {text:'▲ OVERSOLD BOUNCE · BUY', class:'signal-buy', score:75, ctx:ctxBase};
+    if(r!=null && r>72 && rS<-2) return {text:'▼ OVERBOUGHT · SELL', class:'signal-sell', score:25, ctx:ctxBase};
+    if(r!=null && r<42 && rS>1 && macdRising) return {text:'▲ DIP · BUY', class:'signal-buy', score:68, ctx:ctxBase};
+    if(r!=null && r>58 && rS<-1 && !macdRising) return {text:'▼ ROTATION · SELL', class:'signal-sell', score:32, ctx:ctxBase};
+    if(macdH>0 && macdRising) return {text:'↗ Bias UP · HOLD/BUY', class:'signal-buy', score:60, ctx:ctxBase};
+    return {text:'↗ Bias UP · HOLD', class:'signal-neutral', score:55, ctx:ctxBase};
   }
 
-  // === WEAK DOWN ===
+  // ==== 5. WEAK DOWN — bardziej wrażliwy ====
   if(trend.kind === 'weak_down'){
-    if(r!=null && r>65 && rS<-2) return {text:'▼ OVERBOUGHT BOUNCE · SELL', class:'signal-sell', score:28, ctx};
-    if(r!=null && r<28 && rS>2 && macdH>macdHP) return {text:'▲ OVERSOLD · BUY', class:'signal-buy', score:72, ctx};
-    if(macdH<0 && macdH<macdHP) return {text:'↘ Bias DOWN · HOLD/SELL', class:'signal-sell', score:40, ctx};
-    return {text:'↘ Bias DOWN · HOLD', class:'signal-neutral', score:45, ctx};
+    if(r!=null && r>65 && rS<-2) return {text:'▼ OVERBOUGHT REJECTION · SELL', class:'signal-sell', score:25, ctx:ctxBase};
+    if(r!=null && r<28 && rS>2) return {text:'▲ OVERSOLD · BUY', class:'signal-buy', score:75, ctx:ctxBase};
+    if(r!=null && r>58 && rS<-1 && !macdRising) return {text:'▼ ROTATION · SELL', class:'signal-sell', score:32, ctx:ctxBase};
+    if(r!=null && r<42 && rS>1 && macdRising) return {text:'▲ BOUNCE · BUY', class:'signal-buy', score:68, ctx:ctxBase};
+    if(macdH<0 && !macdRising) return {text:'↘ Bias DOWN · HOLD/SELL', class:'signal-sell', score:40, ctx:ctxBase};
+    return {text:'↘ Bias DOWN · HOLD', class:'signal-neutral', score:45, ctx:ctxBase};
   }
 
-  // === RANGE ===
-  if(r!=null && r<30 && rS>0) return {text:'▲ RANGE LOW · BUY', class:'signal-buy', score:70, ctx};
-  if(r!=null && r>70 && rS<0) return {text:'▼ RANGE HIGH · SELL', class:'signal-sell', score:30, ctx};
-  return {text:'● Neutral · HOLD', class:'signal-neutral', score:50, ctx};
+  // ==== 6. RANGE — dużo bardziej wrażliwy (główny fix) ====
+  // Extreme
+  if(r!=null && r<30 && rS>0) return {text:'▲ RANGE LOW · BUY', class:'signal-buy', score:78, ctx:ctxBase};
+  if(r!=null && r>70 && rS<0) return {text:'▼ RANGE HIGH · SELL', class:'signal-sell', score:22, ctx:ctxBase};
+  // Moderate levels with confirmation
+  if(r!=null && r>=58 && r<=70 && rS<-1 && !macdRising){
+    return {text:'▼ ROTATION DOWN · SELL', class:'signal-sell', score:32, ctx:ctxBase};
+  }
+  if(r!=null && r>=30 && r<=42 && rS>1 && macdRising){
+    return {text:'▲ ROTATION UP · BUY', class:'signal-buy', score:68, ctx:ctxBase};
+  }
+  // Lighter bias (still gives direction)
+  if(r!=null && r>52 && rS<0 && macdH<0){
+    return {text:'↘ Bias DOWN · HOLD/SELL', class:'signal-sell', score:42, ctx:ctxBase};
+  }
+  if(r!=null && r<48 && rS>0 && macdH>0){
+    return {text:'↗ Bias UP · HOLD/BUY', class:'signal-buy', score:58, ctx:ctxBase};
+  }
+  return {text:'● Neutral · HOLD', class:'signal-neutral', score:50, ctx:ctxBase};
 }
 
 async function fetchBybit(symbol,interval,limit=1000){
@@ -691,8 +757,6 @@ function updateMetrics(values, priceObjs){
   set('momMetric', (mom>=0?'+':'')+mom.toFixed(2)+'%', mom>0?'up':'down');
   set('ma50Metric', e21!=null?formatPrice(e21):'—', e21!=null&&values[i]>e21?'up':'down');
   set('ma200Metric', e50!=null?formatPrice(e50):'—', e50!=null&&values[i]>e50?'up':'down');
-
-  // TREND-FIRST signal
   const sig = getCurrentSignal(priceObjs, state.timeframe);
   const sigEl = document.getElementById('mainSignal');
   sigEl.className = 'signal-box '+sig.class;
